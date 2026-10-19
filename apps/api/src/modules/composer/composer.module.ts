@@ -1,12 +1,11 @@
 import { Module } from '@nestjs/common';
-import { ComposerService } from './composer.service';
 import { ComposerController } from './composer.controller';
-import { StellarModule } from '../stellar/stellar.module';
+import { ComposerService } from './composer.service';
+import { TransactionSequenceService } from './transaction-sequence.service';
 
 @Module({
-  imports: [StellarModule],
-  providers: [ComposerService],
   controllers: [ComposerController],
-  exports: [ComposerService]
+  providers: [ComposerService, TransactionSequenceService],
+  exports: [ComposerService, TransactionSequenceService],
 })
 export class ComposerModule {}
