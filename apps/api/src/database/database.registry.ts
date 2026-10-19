@@ -12,10 +12,12 @@ import { Watch } from '../modules/monitor/entities/watch.entity';
 import { WatchEvent } from '../modules/monitor/entities/watch-event.entity';
 import { AlertEvent } from '../modules/monitor/entities/alert-event.entity';
 import { MonitorWebhook } from '../modules/monitor/entities/monitor-webhook.entity';
+import { MonitorDigestPreference } from '../modules/monitor/entities/monitor-digest-preference.entity';
 import { TransactionReplay } from '../modules/transaction/entities/transaction-replay.entity';
 import { NetworkSample } from '../modules/network/entities/network-sample.entity';
 import { NetworkProfile } from '../modules/network/entities/network-profile.entity';
 import { WatchedPool } from '../modules/liquidity-pools/entities/watched-pool.entity';
+import { LedgerCloseStat } from '../modules/ledger-close/entities/ledger-close-stat.entity';
 
 import { CreateInitialSchema1500000000000 } from './migrations/1500000000000-create-initial-schema';
 import { CreateLedgerMonitor1752926400000 } from './migrations/1752926400000-create-ledger-monitor';
@@ -36,6 +38,7 @@ import { DropGraphSnapshots1786500000000 } from './migrations/1786500000000-drop
 import { DropTransactionSequenceRun1790607330235 } from './migrations/1790607330235-drop-transaction-sequence-run';
 import { AddApiKeyMaskedKey1790700000000 } from './migrations/1790700000000-add-api-key-masked-key';
 import { CreateLiquidityPools1790800000000 } from './migrations/1790800000000-create-liquidity-pools';
+import { CreateLedgerCloseStats1791000000000 } from './migrations/1791000000000-create-ledger-close-stats';
 
 /** A TypeORM migration constructor as passed to `DataSourceOptions.migrations`. */
 export type MigrationClass = new () => MigrationInterface;
@@ -63,10 +66,12 @@ export const ALL_ENTITIES: EntityClass[] = [
   WatchEvent,
   AlertEvent,
   MonitorWebhook,
+  MonitorDigestPreference,
   TransactionReplay,
   NetworkSample,
   NetworkProfile,
   WatchedPool,
+  LedgerCloseStat,
 ];
 
 /**
@@ -99,4 +104,5 @@ export const ALL_MIGRATIONS: MigrationClass[] = [
   DropTransactionSequenceRun1790607330235,
   AddApiKeyMaskedKey1790700000000,
   CreateLiquidityPools1790800000000,
+  CreateLedgerCloseStats1791000000000,
 ];
