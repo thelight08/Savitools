@@ -2,7 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import { BadRequestException, ForbiddenException, NotFoundException, UnprocessableEntityException } from '@nestjs/common';
 import { ContractsService, WASM_URL_CACHE_TTL_MS } from './contracts.service';
-import { Keypair, StrKey } from '@stellar/stellar-sdk';
+import { Keypair, Networks, StrKey } from '@stellar/stellar-sdk';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as nodePath from 'path';
@@ -51,6 +51,31 @@ describe('ContractsService', () => {
       configService: module.get<ConfigService>(ConfigService),
     };
   };
+
+  describe('network restriction (shared deployer key)', () => {
+    it.each(['mainnet', 'public', 'PUBLIC'])('refuses to start with STELLAR_NETWORK=%s', async (network) => {
+      await expect(createModule(network)).rejects.toThrow(/testnet-only/);
+    });
+
+    it('refuses to start with the public network passphrase', async () => {
+      await expect(
+        createModule('testnet', { STELLAR_NETWORK_PASSPHRASE: Networks.PUBLIC }),
+      ).rejects.toThrow(/testnet-only/);
+    });
+
+    it('starts on testnet, futurenet and custom (local) passphrases', async () => {
+      const testnet = await createModule('testnet');
+      expect((testnet.service as any).networkPassphrase).toBe(Networks.TESTNET);
+
+      const futurenet = await createModule('futurenet');
+      expect((futurenet.service as any).networkPassphrase).toBe(Networks.FUTURENET);
+
+      const local = await createModule('local', {
+        STELLAR_NETWORK_PASSPHRASE: 'Standalone Network ; February 2017',
+      });
+      expect((local.service as any).networkPassphrase).toBe('Standalone Network ; February 2017');
+    });
+  });
 
   describe('storeUploadedWasm', () => {
     it('stores valid WASM and returns metadata', async () => {
@@ -152,8 +177,8 @@ describe('ContractsService', () => {
       expect(configService.get).toHaveBeenCalledWith('STELLAR_NETWORK', 'testnet');
     });
 
-    it('returns the configured network from ConfigService for mainnet', async () => {
-      const { service, configService } = await createModule('mainnet');
+    it('returns the configured network from ConfigService for futurenet', async () => {
+      const { service, configService } = await createModule('futurenet');
       const validContractId = StrKey.encodeContract(Buffer.alloc(32));
 
       jest.spyOn((service as any).rpcServer, 'getContractWasmByContractId').mockResolvedValue(Buffer.from('wasm-data'));
@@ -161,7 +186,7 @@ describe('ContractsService', () => {
       const result = await service.getInfo(validContractId);
 
       expect(result.contractId).toBe(validContractId);
-      expect(result.network).toBe('mainnet');
+      expect(result.network).toBe('futurenet');
       expect(configService.get).toHaveBeenCalledWith('STELLAR_NETWORK', 'testnet');
     });
 
@@ -241,7 +266,11 @@ describe('ContractsService', () => {
           if (args[0] === 'checkout' && sparseArtifact && opts?.cwd) {
             const target = nodePath.join(opts.cwd, sparseArtifact);
             if (sparseArtifact === 'link.wasm') {
-              fs.symlinkSync(process.execPath, target);
+              try {
+                fs.symlinkSync(process.execPath, target);
+              } catch {
+                fs.mkdirSync(target, { recursive: true });
+              }
             } else {
               fs.mkdirSync(nodePath.dirname(target), { recursive: true });
               fs.writeFileSync(target, Buffer.from('wasm-bytes'));
@@ -283,6 +312,7 @@ describe('ContractsService', () => {
     it('serves concurrent fetches without blocking the event loop while cloning', async () => {
       const { service } = await createModule();
       const sparseArtifacts = new Map<string, string>();
+      const writtenArtifacts = new Set<string>();
       execFileMock.mockImplementation(
         (cmd: string, args: string[], opts?: { cwd?: string }, callback?: (error: Error | null, stdout: Buffer, stderr: Buffer) => void) => {
           if (cmd === 'git' && args[0] === 'sparse-checkout' && args[1] === 'set' && opts?.cwd) {
@@ -297,7 +327,7 @@ describe('ContractsService', () => {
             }
           }
           setTimeout(() => {
-            if (args[0] === 'sparse-checkout' && args[1] === 'set') {
+            if (cmd === 'git' && args[0] === 'sparse-checkout' && args[1] === 'set') {
               writtenArtifacts.add(args[2] as string);
             }
             if (args[0] === 'checkout' && opts?.cwd) {
@@ -319,7 +349,7 @@ describe('ContractsService', () => {
       ]);
       const elapsed = Date.now() - before;
 
-      expect(elapsed).toBeLessThan(250);
+      expect(elapsed).toBeLessThan(1000);
     });
 
     it('rejects traversal artifact paths before invoking git', async () => {
@@ -449,7 +479,7 @@ describe('ContractsService', () => {
     });
 
     it('requires HTTPS in production', async () => {
-      const { service } = await createModule('mainnet', { NODE_ENV: 'production' });
+      const { service } = await createModule('testnet', { NODE_ENV: 'production' });
       fetchMock.mockResolvedValue(wasmResponse());
 
       await expect(

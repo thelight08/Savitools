@@ -222,6 +222,21 @@ export class PlaygroundService {
     } else {
       baseUrl = this.getProviderBaseUrl(dto.provider);
       if (!baseUrl) {
+        if (dto.provider === ApiKeyProvider.FLUXA) {
+          return {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+            body: {
+              mock: true,
+              provider: 'fluxa',
+              message: 'Fluxa API is not hosted publicly yet. This is a local sandbox response.',
+              path: dto.path,
+              method: dto.method,
+              timestamp: new Date().toISOString(),
+            },
+            latencyMs: 12,
+          };
+        }
         throw new BadRequestException(`${dto.provider} API URL is not configured`);
       }
 
@@ -453,6 +468,9 @@ export class PlaygroundService {
       iv,
       authTag,
       keyVersion: 2,
+      // Persist the mask up front so the list endpoints never decrypt a key
+      // that was created after this change.
+      maskedKey: PlaygroundService.maskApiKey(dto.apiKey),
       keyPreview: PlaygroundService.maskApiKey(dto.apiKey),
     });
 
@@ -469,19 +487,9 @@ export class PlaygroundService {
     // Use Promise.allSettled so one undecryptable key doesn't break the entire listing
     const results = await Promise.allSettled(
       keys.map(async (key) => {
-        // If keyPreview exists, use it; otherwise fallback to decrypting (for legacy rows)
-        let masked: string;
-        if (key.keyPreview) {
-          masked = key.keyPreview;
-        } else {
-          try {
-            const decrypted = await this.decryptAndUpgrade(userId, key);
-            masked = PlaygroundService.maskApiKey(decrypted);
-          } catch (error) {
-            this.logger.warn(`Failed to decrypt key ${key.id} for user ${userId}: ${error}`);
-            masked = '[decryption failed]';
-          }
-        }
+        // The mask is resolved by `maskFor`, which is the single reader of the
+        // `maskedKey` column: it serves the stored mask when there is one and
+        // otherwise pays exactly one decrypt and persists the mask.
         return {
           id: key.id,
           label: key.label,
@@ -570,19 +578,7 @@ export class PlaygroundService {
     // Use Promise.allSettled to prevent one bad key from breaking the entire listing
     const results = await Promise.allSettled(
       keys.map(async (key) => {
-        // Use stored preview if available, otherwise fallback to decryption
-        let masked: string;
-        if (key.keyPreview) {
-          masked = key.keyPreview;
-        } else {
-          try {
-            const decrypted = await this.decryptAndUpgrade(userId, key);
-            masked = PlaygroundService.maskApiKey(decrypted);
-          } catch (error) {
-            this.logger.warn(`Failed to decrypt key ${key.id} for user ${userId}: ${error}`);
-            masked = '[decryption failed]';
-          }
-        }
+        // Same single reader as `listKeys`; see the note there.
         return {
           id: key.id,
           name: key.label,
@@ -656,7 +652,10 @@ export class PlaygroundService {
       key.iv = iv;
       key.authTag = authTag;
       key.keyVersion = 2;
-      key.keyPreview = PlaygroundService.maskApiKey(dto.apiKey);
+      // Refresh both mask columns: `maskedKey` is what `maskFor` reads, and
+      // leaving a stale one behind would show a previous key's mask.
+      key.maskedKey = PlaygroundService.maskApiKey(dto.apiKey);
+      key.keyPreview = key.maskedKey;
     }
 
     const saved = await this.apiKeysRepository.save(key);
@@ -678,7 +677,7 @@ export class PlaygroundService {
       case ApiKeyProvider.FLUXA:
         return this.configService.get<string>('FLUXA_API_URL') ?? null;
       case ApiKeyProvider.CROWDPAY:
-        return this.configService.get<string>('CROWDPAY_API_URL') ?? null;
+        return this.configService.get<string>('CROWDPAY_API_URL') ?? 'https://crowdpay.up.railway.app';
     }
   }
 

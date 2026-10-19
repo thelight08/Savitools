@@ -25,7 +25,6 @@ import { BuildTransactionDto, OperationDto } from './dto/build-transaction.dto';
 import { SimulateTransactionDto } from './dto/simulate-transaction.dto';
 import { BenchmarkTransactionDto } from './dto/benchmark-transaction.dto';
 import { FeeBumpDto } from './dto/fee-bump.dto';
-import { PartialSignatureDto } from './dto/partial-signature.dto';
 import { ContractsService } from '../contracts/contracts.service';
 
 // ---------------------------------------------------------------------------
@@ -229,14 +228,30 @@ export const OPERATION_MANIFEST = [
       { name: 'minAmountB', label: 'Minimum Received Asset B (pool order)', type: 'number', required: true, placeholder: '0' },
     ],
   },
+  {
+    type: 'invoke_host_function',
+    label: 'Invoke Host Function',
+    description: 'Invoke a Soroban smart contract host function',
+    soroban: {
+      requiresResourceFee: true,
+      requiresSimulation: true,
+    },
+    fields: [
+      { name: 'contractId', label: 'Contract ID', type: 'text', required: true, placeholder: 'C...' },
+      { name: 'functionName', label: 'Function Name', type: 'text', required: true, placeholder: 'transfer' },
+      { name: 'arguments', label: 'Arguments', type: 'scval-array', required: false, placeholder: '[]' },
+      { name: 'useAbi', label: 'Use ABI Validation', type: 'boolean', required: false, placeholder: 'true' },
+      { name: 'rawMode', label: 'Raw Arguments Mode', type: 'boolean', required: false, placeholder: 'false' },
+    ],
+  },
 ];
 
 export interface SimulationResult {
   success: boolean;
-  hash: string;
+  hash: string | null;
   fee: string | null;
   resultCodes: string | null;
-  operationResults: unknown | null;
+  operationResults: string[] | null;
   ledger: number | null;
 }
 
@@ -307,6 +322,19 @@ function validatePoolAmount(field: string, value: unknown, allowZero = false): s
 }
 
 function validatePriceRatio(field: string, value: any): { n: number; d: number } {
+  if (typeof value === 'string' || typeof value === 'number') {
+    const str = String(value);
+    if (!/^\d+(?:\.\d+)?$/.test(str)) {
+      throw new BadRequestException(`${field} numerator and denominator must be positive integers`);
+    }
+    const parts = str.split('.');
+    if (parts.length === 1) {
+      return { n: Number(parts[0]), d: 1 };
+    }
+    const d = Math.pow(10, parts[1].length);
+    const n = Math.round(Number(str) * d);
+    return { n, d };
+  }
   const numerator = String(value?.n ?? '');
   const denominator = String(value?.d ?? '');
   if (!/^\d+$/.test(numerator) || !/^\d+$/.test(denominator)) {
@@ -350,32 +378,6 @@ function liquidityPoolOperationError(operation: any): string | null {
   }
 }
 
-/**
- * Returns a descriptive error string for claimable-balance operations that are
- * statically detectable before submission, otherwise null.
- *
- * - claim_claimable_balance: validates the balance ID format and catches the
- *   most common failure modes (nonexistent ID, already-claimed balances).
- *   Full on-chain validation happens at submission time, but we can surface
- *   the most likely errors early.
- */
-function claimableBalanceOperationError(operation: any, index: number): string | null {
-  if (operation.type === 'claimClaimableBalance') {
-    // The SDK maps claim_claimable_balance → 'claimClaimableBalance' in operation.type.
-    // balanceID is stored as a StrKey-encoded or hex string depending on SDK version.
-    const id = String(operation.balanceID ?? operation.balanceId ?? '');
-    if (!id) {
-      return `op[${index}] claim_claimable_balance: missing balanceId`;
-    }
-    // Cannot verify on-chain existence statically; surface a hint for the
-    // most frequent developer mistakes.
-    if (id.length !== 72 || !/^[0-9a-f]+$/i.test(id)) {
-      return `op[${index}] claim_claimable_balance: balanceId does not appear to be a valid 72-character Stellar balance ID`;
-    }
-  }
-  return null;
-}
-
 @Injectable()
 export class ComposerService {
   private readonly logger = new Logger(ComposerService.name);
@@ -392,6 +394,43 @@ export class ComposerService {
 
   getOperations() {
     return OPERATION_MANIFEST;
+  }
+
+  async validateSorobanArguments(
+    contractId: string,
+    functionName: string,
+    args: any[],
+  ): Promise<{ valid: boolean; errors: string[]; encodedArgs?: any[] }> {
+    if (!this.contractsService) {
+      throw new BadRequestException('Contract ABI functionality is not available');
+    }
+    try {
+      const encodedArgs = await this.contractsService.encodeAbiArguments(
+        contractId,
+        functionName,
+        args,
+      );
+      return { valid: true, errors: [], encodedArgs };
+    } catch (error) {
+      return {
+        valid: false,
+        errors: [error instanceof Error ? error.message : String(error)],
+      };
+    }
+  }
+
+  async getContractAbi(contractId: string) {
+    if (!this.contractsService) {
+      throw new BadRequestException('Contract ABI functionality is not available');
+    }
+    try {
+      return await this.contractsService.getAbi(contractId);
+    } catch (error: any) {
+      if (error?.status === 404 || error?.message?.toLowerCase().includes('not found')) {
+        return null;
+      }
+      throw error;
+    }
   }
 
   private getHorizonServer(network: 'testnet' | 'mainnet' = 'testnet'): Horizon.Server {
@@ -594,7 +633,9 @@ export class ComposerService {
     }
   }
 
-  async simulateTransaction(dto: SimulateTransactionDto) {
+  async simulateTransaction(
+    dto: SimulateTransactionDto,
+  ): Promise<SimulationResult> {
     try {
       const cacheKey = `${dto.network || 'testnet'}:${dto.xdr}`;
       const now = Date.now();
